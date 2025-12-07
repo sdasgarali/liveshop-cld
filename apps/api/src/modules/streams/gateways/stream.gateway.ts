@@ -8,12 +8,13 @@ import {
   MessageBody,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger, UseGuards } from '@nestjs/common';
+import { Logger, UseGuards, forwardRef, Inject } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '@/common/services/prisma.service';
 import { RedisService } from '@/common/services/redis.service';
 import { StreamsService } from '../streams.service';
+import { AuctionService } from '../services/auction.service';
 
 interface AuthenticatedSocket extends Socket {
   userId?: string;
@@ -39,6 +40,8 @@ export class StreamGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private prisma: PrismaService,
     private redis: RedisService,
     private streamsService: StreamsService,
+    @Inject(forwardRef(() => AuctionService))
+    private auctionService: AuctionService,
   ) {}
 
   async handleConnection(client: AuthenticatedSocket) {
@@ -344,5 +347,341 @@ export class StreamGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   emitToStream(streamId: string, event: string, data: any) {
     this.server.to(`stream:${streamId}`).emit(event, data);
+  }
+
+  // ============================================
+  // AUCTION EVENTS
+  // ============================================
+
+  @SubscribeMessage('start-auction')
+  async handleStartAuction(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: {
+      streamId: string;
+      productId: string;
+      duration?: number;
+      startingBid?: number;
+      bidIncrement?: number;
+      reservePrice?: number;
+      buyItNowPrice?: number;
+      extendOnBid?: boolean;
+    },
+  ) {
+    if (!client.userId) {
+      client.emit('error', { message: 'Authentication required' });
+      return;
+    }
+
+    const { streamId, productId, ...options } = data;
+
+    // Verify host
+    const stream = await this.prisma.liveStream.findUnique({
+      where: { id: streamId },
+    });
+
+    if (!stream || stream.hostId !== client.userId) {
+      client.emit('error', { message: 'Only the host can start an auction' });
+      return;
+    }
+
+    try {
+      const auctionState = await this.auctionService.startAuction(streamId, productId, options);
+
+      // Broadcast auction start to all viewers
+      this.server.to(`stream:${streamId}`).emit('auction-started', {
+        ...auctionState,
+        product: await this.prisma.product.findUnique({
+          where: { id: productId },
+          include: { images: { take: 3 } },
+        }),
+        buyItNowPrice: options.buyItNowPrice,
+      });
+
+      // Start countdown broadcast
+      this.startCountdownBroadcast(streamId);
+
+      this.logger.log(`Auction started for product ${productId} in stream ${streamId}`);
+    } catch (error) {
+      client.emit('error', { message: error.message });
+    }
+  }
+
+  @SubscribeMessage('auction-bid')
+  async handleAuctionBid(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { streamId: string; amount: number },
+  ) {
+    if (!client.userId) {
+      client.emit('error', { message: 'Authentication required to place bids' });
+      return;
+    }
+
+    const { streamId, amount } = data;
+
+    const result = await this.auctionService.placeBid(streamId, client.userId, amount);
+
+    if (result.success) {
+      // Broadcast new bid to all viewers
+      this.server.to(`stream:${streamId}`).emit('auction-bid', {
+        bid: result.bid,
+        currentBid: result.currentBid,
+        timeRemaining: result.timeRemaining,
+      });
+
+      this.logger.log(`Bid placed: $${amount} in stream ${streamId} by ${client.username}`);
+    } else {
+      client.emit('bid-error', { message: result.message });
+    }
+  }
+
+  @SubscribeMessage('set-auto-bid')
+  async handleSetAutoBid(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { streamId: string; maxAmount: number },
+  ) {
+    if (!client.userId) {
+      client.emit('error', { message: 'Authentication required' });
+      return;
+    }
+
+    const { streamId, maxAmount } = data;
+
+    const result = await this.auctionService.setAutoBid(streamId, client.userId, maxAmount);
+
+    client.emit('auto-bid-set', result);
+
+    if (result.success) {
+      this.logger.log(`Auto-bid set: $${maxAmount} in stream ${streamId} by ${client.username}`);
+    }
+  }
+
+  @SubscribeMessage('cancel-auto-bid')
+  async handleCancelAutoBid(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { streamId: string },
+  ) {
+    if (!client.userId) {
+      client.emit('error', { message: 'Authentication required' });
+      return;
+    }
+
+    await this.auctionService.cancelAutoBid(data.streamId, client.userId);
+    client.emit('auto-bid-cancelled', { success: true });
+  }
+
+  @SubscribeMessage('buy-it-now')
+  async handleBuyItNow(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { streamId: string },
+  ) {
+    if (!client.userId) {
+      client.emit('error', { message: 'Authentication required' });
+      return;
+    }
+
+    const { streamId } = data;
+
+    const result = await this.auctionService.buyItNow(streamId, client.userId);
+
+    if (result.success) {
+      // Broadcast buy-it-now purchase to all viewers
+      this.server.to(`stream:${streamId}`).emit('auction-ended', {
+        winner: result.bid?.user,
+        finalPrice: result.currentBid,
+        reason: 'buy_now',
+      });
+
+      this.logger.log(`Buy It Now: $${result.currentBid} in stream ${streamId} by ${client.username}`);
+    } else {
+      client.emit('buy-error', { message: result.message });
+    }
+  }
+
+  @SubscribeMessage('end-auction')
+  async handleEndAuction(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { streamId: string },
+  ) {
+    if (!client.userId) {
+      client.emit('error', { message: 'Authentication required' });
+      return;
+    }
+
+    const { streamId } = data;
+
+    // Verify host
+    const stream = await this.prisma.liveStream.findUnique({
+      where: { id: streamId },
+    });
+
+    if (!stream || stream.hostId !== client.userId) {
+      client.emit('error', { message: 'Only the host can end an auction' });
+      return;
+    }
+
+    const result = await this.auctionService.endAuction(streamId, 'sold');
+
+    this.server.to(`stream:${streamId}`).emit('auction-ended', {
+      winner: result.winner,
+      finalPrice: result.finalPrice,
+      reserveMet: result.reserveMet,
+      reason: 'host_ended',
+    });
+
+    this.logger.log(`Auction ended by host in stream ${streamId}`);
+  }
+
+  @SubscribeMessage('get-auction-state')
+  async handleGetAuctionState(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { streamId: string },
+  ) {
+    const countdown = await this.auctionService.getCountdown(data.streamId);
+    client.emit('auction-state', countdown);
+  }
+
+  // Broadcast countdown every second
+  private async startCountdownBroadcast(streamId: string) {
+    const interval = setInterval(async () => {
+      const countdown = await this.auctionService.getCountdown(streamId);
+
+      if (!countdown.isActive) {
+        clearInterval(interval);
+
+        // Auction ended naturally
+        const result = await this.auctionService.endAuction(streamId, 'timeout');
+        this.server.to(`stream:${streamId}`).emit('auction-ended', {
+          winner: result.winner,
+          finalPrice: result.finalPrice,
+          reserveMet: result.reserveMet,
+          reason: 'timeout',
+        });
+
+        return;
+      }
+
+      this.server.to(`stream:${streamId}`).emit('auction-countdown', {
+        timeRemaining: countdown.timeRemaining,
+        currentBid: countdown.currentBid,
+        bidCount: countdown.bidCount,
+        highestBidder: countdown.highestBidder,
+      });
+    }, 1000);
+
+    // Store interval reference for cleanup
+    await this.redis.set(`stream:${streamId}:countdown`, 'active', 300);
+  }
+
+  // ============================================
+  // QUICK SALE (Fixed Price during stream)
+  // ============================================
+
+  @SubscribeMessage('quick-sale')
+  async handleQuickSale(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: {
+      streamId: string;
+      productId: string;
+      price: number;
+      quantity?: number;
+    },
+  ) {
+    if (!client.userId) {
+      client.emit('error', { message: 'Authentication required' });
+      return;
+    }
+
+    const { streamId, productId, price, quantity = 1 } = data;
+
+    // Verify host
+    const stream = await this.prisma.liveStream.findUnique({
+      where: { id: streamId },
+    });
+
+    if (!stream || stream.hostId !== client.userId) {
+      client.emit('error', { message: 'Only the host can create quick sales' });
+      return;
+    }
+
+    // Update stream product for quick sale
+    await this.prisma.streamProduct.update({
+      where: { streamId_productId: { streamId, productId } },
+      data: {
+        isActive: true,
+        currentBid: price, // Using currentBid to store fixed price
+        featuredAt: new Date(),
+      },
+    });
+
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+      include: { images: { take: 3 } },
+    });
+
+    // Broadcast quick sale to all viewers
+    this.server.to(`stream:${streamId}`).emit('quick-sale-started', {
+      product,
+      price,
+      quantity,
+    });
+
+    this.logger.log(`Quick sale started: ${productId} at $${price} in stream ${streamId}`);
+  }
+
+  @SubscribeMessage('claim-quick-sale')
+  async handleClaimQuickSale(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { streamId: string; productId: string },
+  ) {
+    if (!client.userId) {
+      client.emit('error', { message: 'Authentication required' });
+      return;
+    }
+
+    const { streamId, productId } = data;
+
+    // Get stream product
+    const streamProduct = await this.prisma.streamProduct.findUnique({
+      where: { streamId_productId: { streamId, productId } },
+    });
+
+    if (!streamProduct || !streamProduct.isActive || streamProduct.isSold) {
+      client.emit('error', { message: 'Product not available' });
+      return;
+    }
+
+    // Mark as sold
+    await this.prisma.streamProduct.update({
+      where: { id: streamProduct.id },
+      data: {
+        isSold: true,
+        soldAt: new Date(),
+        soldPrice: streamProduct.currentBid,
+        isActive: false,
+      },
+    });
+
+    // Update product status
+    await this.prisma.product.update({
+      where: { id: productId },
+      data: { status: 'SOLD' },
+    });
+
+    const buyer = await this.prisma.user.findUnique({
+      where: { id: client.userId },
+      select: { id: true, username: true, displayName: true, avatarUrl: true },
+    });
+
+    // Broadcast sale to all viewers
+    this.server.to(`stream:${streamId}`).emit('quick-sale-claimed', {
+      productId,
+      buyer,
+      price: streamProduct.currentBid?.toNumber(),
+    });
+
+    // Increment stream revenue
+    await this.streamsService.incrementTotalRevenue(streamId, streamProduct.currentBid?.toNumber() || 0);
+
+    this.logger.log(`Quick sale claimed: ${productId} by ${client.username} in stream ${streamId}`);
   }
 }

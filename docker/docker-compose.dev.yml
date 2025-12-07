@@ -60,19 +60,32 @@ services:
       timeout: 20s
       retries: 3
 
-  nginx-rtmp:
-    image: alfg/nginx-rtmp
-    container_name: liveshop-rtmp
+  media-server:
+    build:
+      context: ./media-server
+      dockerfile: Dockerfile
+    container_name: liveshop-media
+    restart: unless-stopped
     ports:
-      - "1935:1935"
-      - "8080:80"
+      - "1935:1935"   # RTMP ingest
+      - "8080:8080"   # HLS/DASH playback
     volumes:
-      - ./nginx-rtmp.conf:/etc/nginx/nginx.conf
+      - hls_data:/tmp/hls
+      - dash_data:/tmp/dash
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      - redis
 
 volumes:
   postgres_data:
   redis_data:
   minio_data:
+  hls_data:
+  dash_data:
 
 networks:
   default:
