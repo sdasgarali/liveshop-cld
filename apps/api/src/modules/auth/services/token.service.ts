@@ -4,6 +4,11 @@ import { ConfigService } from '@nestjs/config';
 import { User } from '@prisma/client';
 import { AuthTokens, TokenPayload } from '../interfaces/auth.interface';
 
+export interface TokenOptions {
+  accessExpiresIn?: string;
+  refreshExpiresIn?: string;
+}
+
 @Injectable()
 export class TokenService {
   constructor(
@@ -11,7 +16,7 @@ export class TokenService {
     private configService: ConfigService,
   ) {}
 
-  async generateTokens(user: User): Promise<AuthTokens> {
+  async generateTokens(user: User, options?: TokenOptions): Promise<AuthTokens> {
     const payload: TokenPayload = {
       sub: user.id,
       email: user.email,
@@ -19,8 +24,10 @@ export class TokenService {
       role: user.role,
     };
 
-    const accessExpiresIn = this.configService.get<string>('jwt.accessExpiresIn') || '15m';
-    const refreshExpiresIn = this.configService.get<string>('jwt.refreshExpiresIn') || '7d';
+    const accessExpiresIn = options?.accessExpiresIn ||
+      this.configService.get<string>('jwt.accessExpiresIn') || '15m';
+    const refreshExpiresIn = options?.refreshExpiresIn ||
+      this.configService.get<string>('jwt.refreshExpiresIn') || '7d';
 
     const [accessToken, refreshToken] = await Promise.all([
       this.jwtService.signAsync(payload, {

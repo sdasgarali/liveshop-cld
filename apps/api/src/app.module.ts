@@ -9,13 +9,11 @@ import { UsersModule } from './modules/users/users.module';
 import { ProductsModule } from './modules/products/products.module';
 import { StreamsModule } from './modules/streams/streams.module';
 import { OrdersModule } from './modules/orders/orders.module';
-import { BidsModule } from './modules/bids/bids.module';
-import { ChatModule } from './modules/chat/chat.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
-import { AIModule } from './modules/ai/ai.module';
-import { SearchModule } from './modules/search/search.module';
+import { AiModule } from './modules/ai/ai.module';
 import { PaymentsModule } from './modules/payments/payments.module';
-import { UploadsModule } from './modules/uploads/uploads.module';
+import { UploadModule } from './modules/upload/upload.module';
+import { ShippingModule } from './modules/shipping/shipping.module';
 
 import configuration from './config/configuration';
 import { validate } from './config/env.validation';
@@ -51,13 +49,11 @@ import { validate } from './config/env.validation';
     ProductsModule,
     StreamsModule,
     OrdersModule,
-    BidsModule,
-    ChatModule,
     NotificationsModule,
-    AIModule,
-    SearchModule,
+    AiModule,
     PaymentsModule,
-    UploadsModule,
+    UploadModule,
+    ShippingModule,
   ],
 })
 export class AppModule {}

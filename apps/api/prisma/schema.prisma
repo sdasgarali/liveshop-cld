@@ -75,6 +75,7 @@ model User {
   streams           LiveStream[]
   streamViews       StreamView[]
   refreshTokens     RefreshToken[]
+  devices           UserDevice[]
 
   @@index([email])
   @@index([username])
@@ -682,6 +683,30 @@ model Notification {
 // ============================================
 // AI & SEARCH
 // ============================================
+
+model UserDevice {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  pushToken     String
+  platform      String
+  deviceModel   String?
+  osVersion     String?
+  appVersion    String?
+  deviceId      String?
+
+  isActive      Boolean  @default(true)
+  lastActiveAt  DateTime @default(now())
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([pushToken])
+  @@index([userId])
+  @@index([deviceId])
+  @@map("user_devices")
+}
 
 model SearchQuery {
   id          String   @id @default(uuid())
