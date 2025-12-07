@@ -1,0 +1,713 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearch", "postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgvector(map: "vector"), pg_trgm]
+}
+
+// ============================================
+// USER & AUTHENTICATION
+// ============================================
+
+enum UserRole {
+  BUYER
+  SELLER
+  ADMIN
+  MODERATOR
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+  BANNED
+}
+
+enum AuthProvider {
+  EMAIL
+  GOOGLE
+  APPLE
+  FACEBOOK
+}
+
+model User {
+  id                String       @id @default(uuid())
+  email             String       @unique
+  username          String       @unique
+  passwordHash      String?
+  firstName         String?
+  lastName          String?
+  displayName       String?
+  avatarUrl         String?
+  bannerUrl         String?
+  bio               String?
+  phone             String?
+  phoneVerified     Boolean      @default(false)
+  emailVerified     Boolean      @default(false)
+  role              UserRole     @default(BUYER)
+  status            UserStatus   @default(PENDING_VERIFICATION)
+  authProvider      AuthProvider @default(EMAIL)
+  authProviderId    String?
+  twoFactorEnabled  Boolean      @default(false)
+  twoFactorSecret   String?
+  lastLoginAt       DateTime?
+  lastLoginIp       String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  // Relations
+  sellerProfile     SellerProfile?
+  addresses         Address[]
+  paymentMethods    PaymentMethod[]
+  orders            Order[]
+  bids              Bid[]
+  watchlist         WatchlistItem[]
+  following         Follow[]         @relation("Following")
+  followers         Follow[]         @relation("Followers")
+  sentMessages      ChatMessage[]    @relation("MessageSender")
+  notifications     Notification[]
+  reviews           Review[]         @relation("ReviewAuthor")
+  receivedReviews   Review[]         @relation("ReviewTarget")
+  streams           LiveStream[]
+  streamViews       StreamView[]
+  refreshTokens     RefreshToken[]
+
+  @@index([email])
+  @@index([username])
+  @@index([status])
+  @@map("users")
+}
+
+model SellerProfile {
+  id                  String   @id @default(uuid())
+  userId              String   @unique
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  businessName        String?
+  businessType        String?
+  taxId               String?
+  stripeAccountId     String?
+  stripeOnboarded     Boolean  @default(false)
+  commissionRate      Decimal  @default(0.10) @db.Decimal(5, 4)
+
+  totalSales          Decimal  @default(0) @db.Decimal(12, 2)
+  totalRevenue        Decimal  @default(0) @db.Decimal(12, 2)
+  averageRating       Decimal  @default(0) @db.Decimal(3, 2)
+  totalReviews        Int      @default(0)
+
+  isVerified          Boolean  @default(false)
+  verifiedAt          DateTime?
+  featuredSeller      Boolean  @default(false)
+
+  returnPolicy        String?
+  shippingPolicy      String?
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  // Relations
+  products            Product[]
+  categories          SellerCategory[]
+  payouts             Payout[]
+
+  @@map("seller_profiles")
+}
+
+model SellerCategory {
+  id              String        @id @default(uuid())
+  sellerId        String
+  seller          SellerProfile @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  categoryId      String
+  category        Category      @relation(fields: [categoryId], references: [id])
+  approved        Boolean       @default(false)
+  approvedAt      DateTime?
+  createdAt       DateTime      @default(now())
+
+  @@unique([sellerId, categoryId])
+  @@map("seller_categories")
+}
+
+model RefreshToken {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token       String   @unique
+  deviceInfo  String?
+  ipAddress   String?
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([token])
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model Address {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  label         String?
+  firstName     String
+  lastName      String
+  company       String?
+  addressLine1  String
+  addressLine2  String?
+  city          String
+  state         String
+  postalCode    String
+  country       String   @default("US")
+  phone         String?
+  isDefault     Boolean  @default(false)
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  orders        Order[]
+
+  @@index([userId])
+  @@map("addresses")
+}
+
+model PaymentMethod {
+  id                String   @id @default(uuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  stripePaymentId   String   @unique
+  type              String
+  brand             String?
+  last4             String?
+  expiryMonth       Int?
+  expiryYear        Int?
+  isDefault         Boolean  @default(false)
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([userId])
+  @@map("payment_methods")
+}
+
+// ============================================
+// PRODUCTS & CATEGORIES
+// ============================================
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  SOLD
+  RESERVED
+  ARCHIVED
+}
+
+enum ProductCondition {
+  NEW
+  LIKE_NEW
+  EXCELLENT
+  GOOD
+  FAIR
+  POOR
+}
+
+model Category {
+  id              String     @id @default(uuid())
+  name            String
+  slug            String     @unique
+  description     String?
+  iconUrl         String?
+  imageUrl        String?
+  parentId        String?
+  parent          Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children        Category[] @relation("CategoryHierarchy")
+  sortOrder       Int        @default(0)
+  isActive        Boolean    @default(true)
+
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  products        Product[]
+  sellers         SellerCategory[]
+
+  @@index([slug])
+  @@index([parentId])
+  @@map("categories")
+}
+
+model Product {
+  id                String           @id @default(uuid())
+  sellerId          String
+  seller            SellerProfile    @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  categoryId        String
+  category          Category         @relation(fields: [categoryId], references: [id])
+
+  title             String
+  slug              String
+  description       String
+  condition         ProductCondition
+  status            ProductStatus    @default(DRAFT)
+
+  price             Decimal          @db.Decimal(10, 2)
+  compareAtPrice    Decimal?         @db.Decimal(10, 2)
+  costPrice         Decimal?         @db.Decimal(10, 2)
+  currency          String           @default("USD")
+
+  quantity          Int              @default(1)
+  sku               String?
+  barcode           String?
+
+  weight            Decimal?         @db.Decimal(8, 2)
+  weightUnit        String           @default("oz")
+
+  tags              String[]
+  attributes        Json?
+
+  // AI-generated fields
+  aiDescription     String?
+  aiTags            String[]
+  aiPriceSuggestion Decimal?         @db.Decimal(10, 2)
+  embedding         Unsupported("vector(1536)")?
+
+  viewCount         Int              @default(0)
+  watchCount        Int              @default(0)
+
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  publishedAt       DateTime?
+
+  // Relations
+  images            ProductImage[]
+  watchlist         WatchlistItem[]
+  orderItems        OrderItem[]
+  streamProducts    StreamProduct[]
+  bids              Bid[]
+
+  @@index([sellerId])
+  @@index([categoryId])
+  @@index([status])
+  @@index([slug])
+  @@map("products")
+}
+
+model ProductImage {
+  id          String   @id @default(uuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  url         String
+  thumbnailUrl String?
+  alt         String?
+  sortOrder   Int      @default(0)
+  isPrimary   Boolean  @default(false)
+
+  createdAt   DateTime @default(now())
+
+  @@index([productId])
+  @@map("product_images")
+}
+
+model WatchlistItem {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  notifyOnDrop  Boolean @default(true)
+  notifyOnLive  Boolean @default(true)
+
+  createdAt   DateTime @default(now())
+
+  @@unique([userId, productId])
+  @@map("watchlist_items")
+}
+
+// ============================================
+// LIVE STREAMING
+// ============================================
+
+enum StreamStatus {
+  SCHEDULED
+  LIVE
+  PAUSED
+  ENDED
+  CANCELLED
+}
+
+model LiveStream {
+  id              String       @id @default(uuid())
+  hostId          String
+  host            User         @relation(fields: [hostId], references: [id], onDelete: Cascade)
+
+  title           String
+  description     String?
+  thumbnailUrl    String?
+
+  status          StreamStatus @default(SCHEDULED)
+  scheduledAt     DateTime?
+  startedAt       DateTime?
+  endedAt         DateTime?
+
+  // Streaming config
+  streamKey       String       @unique @default(uuid())
+  playbackUrl     String?
+  rtmpUrl         String?
+  hlsUrl          String?
+
+  // Stats
+  viewerCount     Int          @default(0)
+  peakViewers     Int          @default(0)
+  totalViews      Int          @default(0)
+  totalRevenue    Decimal      @default(0) @db.Decimal(12, 2)
+
+  // Settings
+  chatEnabled     Boolean      @default(true)
+  biddingEnabled  Boolean      @default(true)
+  replayEnabled   Boolean      @default(true)
+
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  // Relations
+  products        StreamProduct[]
+  messages        ChatMessage[]
+  viewers         StreamView[]
+  bids            Bid[]
+
+  @@index([hostId])
+  @@index([status])
+  @@index([scheduledAt])
+  @@map("live_streams")
+}
+
+model StreamProduct {
+  id            String     @id @default(uuid())
+  streamId      String
+  stream        LiveStream @relation(fields: [streamId], references: [id], onDelete: Cascade)
+  productId     String
+  product       Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  sortOrder     Int        @default(0)
+  startingBid   Decimal?   @db.Decimal(10, 2)
+  currentBid    Decimal?   @db.Decimal(10, 2)
+  bidIncrement  Decimal    @default(1) @db.Decimal(10, 2)
+
+  isActive      Boolean    @default(false)
+  isSold        Boolean    @default(false)
+  soldAt        DateTime?
+  soldPrice     Decimal?   @db.Decimal(10, 2)
+
+  featuredAt    DateTime?
+  createdAt     DateTime   @default(now())
+
+  @@unique([streamId, productId])
+  @@map("stream_products")
+}
+
+model StreamView {
+  id          String     @id @default(uuid())
+  streamId    String
+  stream      LiveStream @relation(fields: [streamId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  sessionId   String
+  joinedAt    DateTime   @default(now())
+  leftAt      DateTime?
+  duration    Int?
+
+  @@index([streamId])
+  @@index([userId])
+  @@map("stream_views")
+}
+
+// ============================================
+// BIDDING & AUCTIONS
+// ============================================
+
+enum BidStatus {
+  ACTIVE
+  OUTBID
+  WON
+  CANCELLED
+}
+
+model Bid {
+  id            String     @id @default(uuid())
+  userId        String
+  user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId     String
+  product       Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  streamId      String?
+  stream        LiveStream? @relation(fields: [streamId], references: [id], onDelete: SetNull)
+
+  amount        Decimal    @db.Decimal(10, 2)
+  status        BidStatus  @default(ACTIVE)
+
+  isAutoBid     Boolean    @default(false)
+  maxAutoBid    Decimal?   @db.Decimal(10, 2)
+
+  createdAt     DateTime   @default(now())
+
+  @@index([productId])
+  @@index([userId])
+  @@index([streamId])
+  @@map("bids")
+}
+
+// ============================================
+// ORDERS & PAYMENTS
+// ============================================
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+  DISPUTED
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+model Order {
+  id                String        @id @default(uuid())
+  orderNumber       String        @unique
+  userId            String
+  user              User          @relation(fields: [userId], references: [id])
+  addressId         String?
+  address           Address?      @relation(fields: [addressId], references: [id])
+
+  status            OrderStatus   @default(PENDING)
+  paymentStatus     PaymentStatus @default(PENDING)
+
+  subtotal          Decimal       @db.Decimal(10, 2)
+  shippingCost      Decimal       @db.Decimal(10, 2)
+  taxAmount         Decimal       @db.Decimal(10, 2)
+  discountAmount    Decimal       @default(0) @db.Decimal(10, 2)
+  total             Decimal       @db.Decimal(10, 2)
+  currency          String        @default("USD")
+
+  stripePaymentId   String?
+  stripeChargeId    String?
+
+  notes             String?
+  internalNotes     String?
+
+  shippedAt         DateTime?
+  deliveredAt       DateTime?
+  cancelledAt       DateTime?
+
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  items             OrderItem[]
+  shipments         Shipment[]
+
+  @@index([userId])
+  @@index([orderNumber])
+  @@index([status])
+  @@map("orders")
+}
+
+model OrderItem {
+  id            String   @id @default(uuid())
+  orderId       String
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id])
+  sellerId      String
+
+  title         String
+  price         Decimal  @db.Decimal(10, 2)
+  quantity      Int
+  subtotal      Decimal  @db.Decimal(10, 2)
+
+  // Snapshot of product at purchase
+  productSnapshot Json?
+
+  createdAt     DateTime @default(now())
+
+  @@index([orderId])
+  @@index([sellerId])
+  @@map("order_items")
+}
+
+model Shipment {
+  id              String   @id @default(uuid())
+  orderId         String
+  order           Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  carrier         String
+  trackingNumber  String?
+  trackingUrl     String?
+  status          String
+
+  labelUrl        String?
+  labelCost       Decimal? @db.Decimal(8, 2)
+
+  shippedAt       DateTime?
+  deliveredAt     DateTime?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([trackingNumber])
+  @@map("shipments")
+}
+
+model Payout {
+  id                String        @id @default(uuid())
+  sellerId          String
+  seller            SellerProfile @relation(fields: [sellerId], references: [id])
+
+  amount            Decimal       @db.Decimal(10, 2)
+  fee               Decimal       @db.Decimal(10, 2)
+  netAmount         Decimal       @db.Decimal(10, 2)
+  currency          String        @default("USD")
+
+  stripePayoutId    String?
+  status            String
+
+  periodStart       DateTime
+  periodEnd         DateTime
+
+  processedAt       DateTime?
+  createdAt         DateTime      @default(now())
+
+  @@index([sellerId])
+  @@map("payouts")
+}
+
+// ============================================
+// CHAT & MESSAGING
+// ============================================
+
+model ChatMessage {
+  id          String      @id @default(uuid())
+  streamId    String
+  stream      LiveStream  @relation(fields: [streamId], references: [id], onDelete: Cascade)
+  senderId    String
+  sender      User        @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+
+  content     String
+  type        String      @default("text")
+  metadata    Json?
+
+  isDeleted   Boolean     @default(false)
+  deletedAt   DateTime?
+  deletedBy   String?
+
+  createdAt   DateTime    @default(now())
+
+  @@index([streamId])
+  @@index([senderId])
+  @@map("chat_messages")
+}
+
+// ============================================
+// SOCIAL & NOTIFICATIONS
+// ============================================
+
+model Follow {
+  id            String   @id @default(uuid())
+  followerId    String
+  follower      User     @relation("Following", fields: [followerId], references: [id], onDelete: Cascade)
+  followingId   String
+  following     User     @relation("Followers", fields: [followingId], references: [id], onDelete: Cascade)
+
+  notifyLive    Boolean  @default(true)
+  notifyProduct Boolean  @default(true)
+
+  createdAt     DateTime @default(now())
+
+  @@unique([followerId, followingId])
+  @@map("follows")
+}
+
+model Review {
+  id          String   @id @default(uuid())
+  authorId    String
+  author      User     @relation("ReviewAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  targetId    String
+  target      User     @relation("ReviewTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  rating      Int
+  title       String?
+  content     String?
+
+  isVerified  Boolean  @default(false)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([targetId])
+  @@map("reviews")
+}
+
+model Notification {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type        String
+  title       String
+  body        String?
+  data        Json?
+
+  isRead      Boolean  @default(false)
+  readAt      DateTime?
+
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([isRead])
+  @@map("notifications")
+}
+
+// ============================================
+// AI & SEARCH
+// ============================================
+
+model SearchQuery {
+  id          String   @id @default(uuid())
+  userId      String?
+  query       String
+  filters     Json?
+  resultCount Int
+
+  createdAt   DateTime @default(now())
+
+  @@index([query])
+  @@map("search_queries")
+}
+
+model AIGenerationLog {
+  id            String   @id @default(uuid())
+  userId        String?
+  type          String
+  input         Json
+  output        Json
+  model         String
+  tokensUsed    Int
+  latencyMs     Int
+
+  createdAt     DateTime @default(now())
+
+  @@index([type])
+  @@map("ai_generation_logs")
+}

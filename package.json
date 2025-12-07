@@ -1,0 +1,35 @@
+{
+  "name": "liveshop-marketplace",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-time live shopping marketplace with AI-powered features",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "services/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "db:migrate": "pnpm --filter @liveshop/api db:migrate",
+    "db:seed": "pnpm --filter @liveshop/api db:seed",
+    "db:generate": "pnpm --filter @liveshop/api db:generate",
+    "docker:dev": "docker-compose -f docker/docker-compose.dev.yml up",
+    "docker:prod": "docker-compose -f docker/docker-compose.prod.yml up -d",
+    "clean": "turbo run clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "prettier": "^3.1.0",
+    "turbo": "^1.11.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "packageManager": "pnpm@8.11.0"
+}

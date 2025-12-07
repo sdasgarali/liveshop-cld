@@ -1,0 +1,72 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# Environment files
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Testing
+coverage/
+.nyc_output/
+
+# Turbo
+.turbo/
+
+# Docker
+docker-data/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.so
+.mypy_cache/
+.pytest_cache/
+venv/
+.venv/
+
+# Mobile
+*.apk
+*.aab
+*.ipa
+*.dSYM.zip
+*.dSYM
+android/.gradle/
+android/app/build/
+android/build/
+ios/Pods/
+ios/build/
+.expo/
+
+# Secrets
+*.pem
+*.key
+secrets/
